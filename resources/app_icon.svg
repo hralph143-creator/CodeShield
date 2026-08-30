@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2F6BFF"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+  </defs>
+  <!-- 盾牌主体（蓝白渐变） -->
+  <path d="M128 18 L222 50 V130 C222 178 186 220 128 240 C70 220 34 178 34 130 V50 Z"
+        fill="url(#shieldGrad)"/>
+  <!-- 内部代码尖括号 < > 与斜杠 /，体现“代码 + 盾牌” -->
+  <path d="M94 94 L70 128 L94 162"
+        stroke="#FFFFFF" stroke-width="16" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M162 94 L186 128 L162 162"
+        stroke="#FFFFFF" stroke-width="16" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M136 82 L120 174"
+        stroke="#FFFFFF" stroke-width="14" fill="none"
+        stroke-linecap="round"/>
+  <!-- 底部扫描线 -->
+  <path d="M84 198 H172"
+        stroke="#BFD4FF" stroke-width="12" stroke-linecap="round"/>
+</svg>

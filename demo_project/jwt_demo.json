@@ -1,0 +1,5 @@
+{
+  "notice": "DEMO ONLY - INVALID TEST CREDENTIALS",
+  "token": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJkZW1vLXVzZXIiLCJzY29wZSI6ImludmFsaWQtZGVtbyJ9.demoSignature000",
+  "invalid_jwt": "abc.def.ghi"
+}

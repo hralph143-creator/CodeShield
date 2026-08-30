@@ -1,0 +1,6 @@
+# DEMO ONLY - INVALID TEST CREDENTIALS
+client_secret: "demo-yaml-secret-0000"
+support_email: "security@example.invalid"
+demo_phone: "13800000000"
+demo_id: "990000199001011239"
+invalid_demo_id: "990000199013011239"

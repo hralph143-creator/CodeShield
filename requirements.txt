@@ -1,0 +1,4 @@
+# CodeShield 运行时唯一依赖的第三方包，其余功能由 Python 标准库实现。
+# 说明：封装可执行程序时需另装 PyInstaller（构建工具，非运行依赖）：
+#   python -m pip install pyinstaller
+PySide6==6.11.2
