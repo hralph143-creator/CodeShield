@@ -49,6 +49,13 @@ def assess_risk(rule: Rule, value: str, context: ContextEvidence, config: AppCon
     if rule.risk_type in CREDENTIAL_TYPES and len(value) >= 16:
         factors.append(RiskFactor("credential_length", 4, f"字符串长度：{len(value)}"))
 
+    if rule.risk_type == "Private Key":
+        if context.has_complete_private_key:
+            factors.append(RiskFactor("complete_pem", 15, "完整 PEM 结构"))
+            factors.append(RiskFactor("private_key_body", 10, "私钥正文结构特征"))
+        else:
+            factors.append(RiskFactor("private_key_header_only", -55, "仅发现私钥起始标记，缺少完整 PEM 结构"))
+
     format_bonus = _format_bonus(rule.risk_type, value)
     if format_bonus:
         factors.append(RiskFactor("credential_format", format_bonus, "凭证格式证据较强"))
@@ -57,7 +64,13 @@ def assess_risk(rule: Rule, value: str, context: ContextEvidence, config: AppCon
     if context.is_comment:
         factors.append(RiskFactor("comment", -12, "位于注释中"))
     if context.is_test_path:
-        factors.append(RiskFactor("test_path", -10, "测试或演示路径"))
+        factors.append(RiskFactor("test_path", -10, "测试或演示数据：风险降低"))
+    if context.is_third_party_source:
+        factors.append(RiskFactor("third_party_source", -15, "第三方依赖/元数据：风险降低"))
+        if rule.risk_type == "Email":
+            factors.append(RiskFactor("public_contact", -8, "公开联系方式特征"))
+    if context.is_detector_rule_feature:
+        factors.append(RiskFactor("detector_rule_feature", -40, "检测器内部规则特征：风险降低"))
     if context.has_demo_marker:
         factors.append(RiskFactor("demo_marker", -8, "附近标记为无效演示数据"))
     if context.is_placeholder:
@@ -70,8 +83,6 @@ def assess_risk(rule: Rule, value: str, context: ContextEvidence, config: AppCon
 
 
 def _format_bonus(risk_type: str, value: str) -> int:
-    if risk_type == "Private Key":
-        return 10
     if risk_type == "JWT" and validate_jwt_structure(value):
         return 10
     if risk_type == "Database Credential" and database_credential_kind(value) == "plaintext":

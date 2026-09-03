@@ -9,6 +9,8 @@ from datetime import datetime
 ID_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
 ID_CHECK_CODES = "10X98765432"
 BASE64URL_PART = re.compile(r"^[A-Za-z0-9_-]+$")
+PRIVATE_KEY_HEADER = re.compile(r"^-----BEGIN ((?:RSA |EC |OPENSSH )?PRIVATE KEY)-----$")
+PEM_BODY_LINE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 
 
 def validate_china_id(value: str) -> bool:
@@ -49,6 +51,28 @@ def database_credential_kind(value: str) -> str:
         password = lowered.split("password=", 1)[1].split("&", 1)[0]
         return "dynamic" if "${" in password else "plaintext"
     return "none"
+
+
+def validate_private_key_structure(lines: list[str], header_index: int, header: str) -> bool:
+    """只验证 PEM 的结构特征，不拼接或返回私钥正文。"""
+    match = PRIVATE_KEY_HEADER.fullmatch(header.strip())
+    if not match or not 0 <= header_index < len(lines):
+        return False
+
+    expected_end = f"-----END {match.group(1)}-----"
+    body_length = 0
+    body_lines = 0
+    for line in lines[header_index + 1:header_index + 202]:
+        stripped = line.strip()
+        if stripped == expected_end:
+            return body_lines > 0 and body_length >= 64
+        if not stripped:
+            continue
+        if stripped.startswith("-----BEGIN ") or not PEM_BODY_LINE.fullmatch(stripped):
+            return False
+        body_lines += 1
+        body_length += len(stripped.rstrip("="))
+    return False
 
 
 def _decode_json_part(value: str) -> object:

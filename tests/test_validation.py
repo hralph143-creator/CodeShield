@@ -4,6 +4,7 @@ from codeshield.validation import (
     database_credential_kind,
     validate_china_id,
     validate_jwt_structure,
+    validate_private_key_structure,
 )
 
 
@@ -39,6 +40,15 @@ class ValidationTests(unittest.TestCase):
             database_credential_kind("mysql://user:${DB_PASSWORD}@localhost/test"),
             "dynamic",
         )
+
+    def test_private_key_requires_body_and_matching_end_marker(self) -> None:
+        header = "-----BEGIN PRIVATE KEY-----"
+        complete = [header, "MIIE" + "A" * 76, "-----END PRIVATE KEY-----"]
+        wrong_end = [header, "MIIE" + "A" * 76, "-----END RSA PRIVATE KEY-----"]
+
+        self.assertTrue(validate_private_key_structure(complete, 0, header))
+        self.assertFalse(validate_private_key_structure([header], 0, header))
+        self.assertFalse(validate_private_key_structure(wrong_end, 0, header))
 
 
 if __name__ == "__main__":

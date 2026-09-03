@@ -59,6 +59,36 @@ class ContextTests(unittest.TestCase):
             self.assertTrue(is_placeholder_value(value))
         self.assertFalse(is_placeholder_value("A9fK2mQ7xT4vN8pR3sW6yB1c"))
 
+    def test_third_party_path_context(self) -> None:
+        for path in (
+            "site-packages/pkg/metadata.py",
+            "_internal/pkg.py",
+            "vendor/pkg.py",
+            "third_party/pkg.py",
+            "sbom/components.json",
+            "package.dist-info/metadata.py",
+        ):
+            with self.subTest(path=path):
+                evidence = analyze('author = "person@example.com"', "person@example.com", path)
+                self.assertTrue(evidence.is_third_party_source)
+
+        evidence = analyze('author = "person@example.com"', "person@example.com", "src/metadata.py")
+        self.assertFalse(evidence.is_third_party_source)
+
+    def test_demo_root_is_used_when_relative_path_has_no_marker(self) -> None:
+        line = 'api_key = "A9fK2mQ7xT4vN8pR"'
+        value = "A9fK2mQ7xT4vN8pR"
+        start = line.index(value)
+        evidence = analyze_context(
+            [line],
+            0,
+            (start, start + len(value)),
+            value,
+            Path("auth.py"),
+            Path("C:/projects/demo_project/auth.py"),
+        )
+        self.assertTrue(evidence.is_test_path)
+
 
 if __name__ == "__main__":
     unittest.main()

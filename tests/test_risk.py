@@ -35,9 +35,9 @@ class RiskTests(unittest.TestCase):
 
         self.assertGreater(api_findings[0].score, by_rule["password_assignment"].score)
         self.assertGreater(api_findings[0].score, api_findings[1].score)
-        self.assertGreater(by_rule["private_key_header"].score, by_rule["password_assignment"].score)
         self.assertGreater(by_rule["china_id_card"].score, by_rule["email_address"].score)
-        self.assertEqual(by_rule["private_key_header"].severity, "critical")
+        self.assertNotEqual(by_rule["private_key_header"].severity, "critical")
+        self.assertTrue(any("缺少完整 PEM" in factor.detail for factor in by_rule["private_key_header"].risk_factors))
         self.assertEqual(by_rule["email_address"].severity, "low")
         self.assertTrue(all(0 <= item.score <= 100 for item in result.findings))
 
@@ -87,6 +87,72 @@ class RiskTests(unittest.TestCase):
         self.assertNotIn(raw, finding.context)
         self.assertNotIn(raw, finding.reason)
         self.assertTrue(finding.risk_factors)
+
+    def test_complete_private_key_pem_is_critical_without_storing_body(self) -> None:
+        body = "MIIE" + "A" * 76
+        finding = self.scan_files({
+            "src/server.conf": "\n".join([
+                "-----BEGIN PRIVATE KEY-----",
+                body,
+                "-----END PRIVATE KEY-----",
+            ])
+        }).findings[0]
+
+        self.assertEqual(finding.severity, "critical")
+        self.assertTrue(any(factor.key == "complete_pem" for factor in finding.risk_factors))
+        self.assertNotIn(body, finding.masked_value)
+        self.assertNotIn(body, finding.context)
+
+    def test_private_key_header_alone_is_not_critical(self) -> None:
+        finding = self.scan_files({"src/constants.py": "-----BEGIN PRIVATE KEY-----"}).findings[0]
+
+        self.assertNotEqual(finding.severity, "critical")
+        self.assertLess(finding.score, 75)
+
+    def test_masking_private_key_header_is_explained_as_detector_feature(self) -> None:
+        finding = self.scan_files({
+            "codeshield/masking.py": 'HEADER = "-----BEGIN PRIVATE KEY-----"',
+        }).findings[0]
+
+        self.assertEqual(finding.severity, "low")
+        self.assertTrue(any(factor.key == "detector_rule_feature" for factor in finding.risk_factors))
+
+    def test_test_and_demo_credentials_remain_detected_with_source_penalty(self) -> None:
+        value = "A9fK2mQ7xT4vN8pR3sW6yB1cD5eH0jL"
+        result = self.scan_files({
+            "tests/test_auth.py": f'api_key = "{value}"',
+            "demo_project/auth.py": f'api_key = "{value}"',
+        })
+
+        self.assertEqual(len(result.findings), 2)
+        for finding in result.findings:
+            self.assertTrue(any(factor.key == "test_path" for factor in finding.risk_factors))
+
+    def test_third_party_and_sbom_email_are_low_and_explained(self) -> None:
+        result = self.scan_files({
+            "site-packages/package/metadata.py": 'author = "maintainer@python.org"',
+            "sboms/components.json": '"author": "person@gmail.com"',
+        })
+
+        self.assertEqual(len(result.findings), 2)
+        for finding in result.findings:
+            self.assertEqual(finding.severity, "low")
+            self.assertTrue(any(factor.key == "third_party_source" for factor in finding.risk_factors))
+            self.assertTrue(any(factor.key == "public_contact" for factor in finding.risk_factors))
+
+    def test_business_api_key_stays_high_risk(self) -> None:
+        value = "A9fK2mQ7xT4vN8pR3sW6yB1cD5eH0jL"
+        finding = self.scan_files({"src/config.py": f'api_key = "{value}"'}).findings[0]
+
+        self.assertIn(finding.severity, {"high", "critical"})
+        self.assertFalse(any(factor.points < 0 for factor in finding.risk_factors))
+
+    def test_codeshield_business_secret_is_not_treated_as_rule_feature(self) -> None:
+        value = "A9fK2mQ7xT4vN8pR3sW6yB1cD5eH0jL"
+        finding = self.scan_files({"codeshield/config.py": f'api_key = "{value}"'}).findings[0]
+
+        self.assertIn(finding.severity, {"high", "critical"})
+        self.assertFalse(any(factor.key == "detector_rule_feature" for factor in finding.risk_factors))
 
 
 if __name__ == "__main__":

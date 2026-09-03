@@ -122,7 +122,14 @@ class RuleDetector:
                 value = match.group("value")
                 if not _valid_candidate(rule.risk_type, value):
                     continue
-                evidence = analyze_context(lines, line_index, match.span("value"), value, relative_path)
+                evidence = analyze_context(
+                    lines,
+                    line_index,
+                    match.span("value"),
+                    value,
+                    relative_path,
+                    file_path,
+                )
                 assessment = assess_risk(rule, value, evidence, self.config)
                 masked = mask_value(value, rule.risk_type)
                 fingerprint = hashlib.sha256(
