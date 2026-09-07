@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFrame,
     QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -46,8 +50,8 @@ class ResultsPage(QWidget):
 
     def _build_ui(self) -> None:
         page_layout = QVBoxLayout(self)
-        page_layout.setContentsMargins(32, 28, 32, 28)
-        page_layout.setSpacing(14)
+        page_layout.setContentsMargins(28, 24, 28, 24)
+        page_layout.setSpacing(12)
 
         title = QLabel("扫描结果")
         title.setObjectName("pageTitle")
@@ -130,6 +134,15 @@ class ResultsPage(QWidget):
         self.whitelist_button = QPushButton("加入白名单")
         action_row.addWidget(self.status_combo, 1)
         action_row.addWidget(self.whitelist_button)
+
+        utility_row = QHBoxLayout()
+        utility_row.setSpacing(8)
+        self.copy_button = QPushButton("复制脱敏摘要")
+        self.copy_button.setToolTip("复制当前风险的脱敏信息，不包含原始敏感值")
+        self.open_location_button = QPushButton("打开文件位置")
+        self.open_location_button.setToolTip("在文件资源管理器中打开源文件所在目录")
+        utility_row.addWidget(self.copy_button)
+        utility_row.addWidget(self.open_location_button)
         self.masked_value = QLabel("—")
         self.masked_value.setObjectName("maskedValue")
         self.masked_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -137,6 +150,7 @@ class ResultsPage(QWidget):
         detail_layout.addWidget(self.detail_title)
         detail_layout.addWidget(self.detail_meta)
         detail_layout.addLayout(action_row)
+        detail_layout.addLayout(utility_row)
         detail_layout.addWidget(self._section_label("脱敏内容"))
         detail_layout.addWidget(self.masked_value)
         detail_layout.addWidget(self._section_label("检测依据"))
@@ -167,6 +181,8 @@ class ResultsPage(QWidget):
         page_layout.addWidget(splitter, 1)
         self.status_combo.currentIndexChanged.connect(self._request_status_change)
         self.whitelist_button.clicked.connect(self._request_whitelist)
+        self.copy_button.clicked.connect(self._copy_masked_summary)
+        self.open_location_button.clicked.connect(self._open_file_location)
         self.compare_button.clicked.connect(self.comparison_requested.emit)
 
     def set_result(self, result: ScanResult | None) -> None:
@@ -252,7 +268,7 @@ class ResultsPage(QWidget):
         )
         self.detail_title.setStyleSheet(f"color: {foreground};")
         self.detail_meta.setText(
-            f"规则：{data['rule']}\n语言：{data['language']}\n"
+            f"来源：{data['source']}\n规则：{data['rule']}\n语言：{data['language']}\n"
             f"文件：{data['file']}\n位置：{data['location']}\n信息熵：{data['entropy']}"
         )
         self.status_combo.blockSignals(True)
@@ -260,7 +276,7 @@ class ResultsPage(QWidget):
         self.status_combo.setCurrentIndex(max(0, index))
         self.status_combo.blockSignals(False)
         self.status_combo.setEnabled(finding.database_id is not None)
-        self.whitelist_button.setEnabled(bool(finding.fingerprint))
+        self.whitelist_button.setEnabled(True)
         self.masked_value.setText(str(data["masked_value"]))
         self._show_factors(finding)
         self.context.setPlainText(str(data["context"]))
@@ -276,15 +292,47 @@ class ResultsPage(QWidget):
         self.context.clear()
         self.suggestion.setText("—")
         self.status_combo.setEnabled(False)
-        self.whitelist_button.setEnabled(False)
+        self.whitelist_button.setEnabled(True)
 
     def _request_status_change(self) -> None:
         if self.current_finding is not None and self.status_combo.isEnabled():
             self.status_change_requested.emit(self.current_finding, self.status_combo.currentData())
 
     def _request_whitelist(self) -> None:
-        if self.current_finding is not None:
-            self.whitelist_requested.emit(self.current_finding)
+        if self.current_finding is None:
+            QMessageBox.information(self, "尚未选择风险", "请先在扫描结果表格中选择一条风险。")
+            return
+        if not self.current_finding.fingerprint:
+            QMessageBox.information(self, "无法加入白名单", "当前风险没有可用指纹，无法加入白名单。")
+            return
+        self.whitelist_requested.emit(self.current_finding)
+
+    def _copy_masked_summary(self) -> None:
+        finding = self.current_finding
+        if finding is None:
+            QMessageBox.information(self, "尚未选择风险", "请先在扫描结果表格中选择一条风险。")
+            return
+        summary = (
+            f"{SEVERITY_LABELS.get(finding.severity, finding.severity)}风险 · "
+            f"{RISK_TYPE_LABELS.get(finding.risk_type, finding.risk_type)} · 评分 {finding.score}\n"
+            f"文件：{finding.relative_path}:{finding.line_number}:{finding.column}\n"
+            f"脱敏内容：{finding.masked_value}\n"
+            f"修复建议：{finding.suggestion}"
+        )
+        QApplication.clipboard().setText(summary)
+        QMessageBox.information(self, "已复制", "风险脱敏摘要已复制到剪贴板。")
+
+    def _open_file_location(self) -> None:
+        finding = self.current_finding
+        if finding is None:
+            QMessageBox.information(self, "尚未选择风险", "请先在扫描结果表格中选择一条风险。")
+            return
+        file_path = Path(finding.file_path)
+        if not file_path.exists() or not file_path.is_file():
+            QMessageBox.warning(self, "源文件不可用", "源文件已移动、删除或当前无法访问。")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(file_path.parent))):
+            QMessageBox.warning(self, "无法打开目录", "系统未能打开源文件所在目录。")
 
     def update_finding_status(self, database_id: int, status: str) -> None:
         from dataclasses import replace

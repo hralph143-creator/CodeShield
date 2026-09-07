@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import shutil
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
@@ -19,11 +21,15 @@ from codeshield.models import (
     WhitelistEntry,
 )
 from codeshield.rules import load_rules
+from codeshield.rules import validate_rule_pattern
 
 
 SCAN_STATUSES = {"completed", "cancelled", "failed"}
 FINDING_STATUSES = {"unresolved", "confirmed", "false_positive", "ignored", "fixed"}
 WHITELIST_TYPES = {"fingerprint", "file", "directory", "rule"}
+CURRENT_SCHEMA_VERSION = 4
+MAX_DATABASE_BACKUPS = 5
+logger = logging.getLogger(__name__)
 
 
 SCHEMA = """
@@ -49,7 +55,8 @@ CREATE TABLE IF NOT EXISTS scan_history (
     low_count INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'completed',
     error_message TEXT NOT NULL DEFAULT '',
-    suppressed_findings INTEGER NOT NULL DEFAULT 0
+    suppressed_findings INTEGER NOT NULL DEFAULT 0,
+    language_files_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS scan_results (
@@ -127,6 +134,7 @@ MIGRATION_COLUMNS = {
         "read_errors": "INTEGER NOT NULL DEFAULT 0",
         "error_message": "TEXT NOT NULL DEFAULT ''",
         "suppressed_findings": "INTEGER NOT NULL DEFAULT 0",
+        "language_files_json": "TEXT NOT NULL DEFAULT '{}'",
     },
     "scan_results": {
         "rule_name": "TEXT NOT NULL DEFAULT ''",
@@ -165,9 +173,18 @@ class Database:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        existed = self.path.exists() and self.path.stat().st_size > 0
+        if existed:
+            with closing(self.connect()) as connection:
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version < CURRENT_SCHEMA_VERSION:
+                self._backup_before_migration()
         with closing(self.connect()) as connection:
-            with connection:
-                connection.executescript(SCHEMA)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                for statement in (part.strip() for part in SCHEMA.split(";")):
+                    if statement:
+                        connection.execute(statement)
                 for table, columns in MIGRATION_COLUMNS.items():
                     existing = {
                         row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
@@ -190,7 +207,32 @@ class Database:
                 connection.execute(
                     "UPDATE scan_results SET status = 'unresolved' WHERE status = 'unhandled'"
                 )
-                connection.execute("PRAGMA user_version = 3")
+                connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                logger.exception("DB-001 SQLite迁移失败 path=%s", self.path)
+                raise
+
+    def _backup_before_migration(self) -> Path:
+        backup_dir = self.path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        target = backup_dir / f"{self.path.stem}_{stamp}{self.path.suffix or '.db'}"
+        sequence = 1
+        while target.exists():
+            target = backup_dir / f"{self.path.stem}_{stamp}_{sequence}{self.path.suffix or '.db'}"
+            sequence += 1
+        shutil.copy2(self.path, target)
+        backups = sorted(
+            backup_dir.glob(f"{self.path.stem}_*{self.path.suffix or '.db'}"),
+            key=lambda item: item.name,
+            reverse=True,
+        )
+        for old in backups[MAX_DATABASE_BACKUPS:]:
+            old.unlink()
+        logger.info("SQLite迁移前备份已创建 file=%s", target.name)
+        return target
 
     def dashboard_counts(self) -> dict[str, int]:
         with closing(self.connect()) as connection:
@@ -223,8 +265,9 @@ class Database:
                         project_name, project_path, project_root, started_at, finished_at,
                         duration_seconds, duration_ms, candidate_files, scanned_files,
                         skipped_files, read_errors, finding_count, critical_count,
-                        high_count, medium_count, low_count, status, suppressed_findings
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        high_count, medium_count, low_count, status, suppressed_findings,
+                        language_files_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         result.root.name or root,
@@ -245,6 +288,7 @@ class Database:
                         counts["low"],
                         stats.status,
                         stats.suppressed_findings,
+                        json.dumps(stats.language_files, ensure_ascii=False, separators=(",", ":")),
                     ),
                 )
                 scan_id = int(cursor.lastrowid)
@@ -363,6 +407,15 @@ class Database:
                 "SELECT * FROM scan_results WHERE scan_id = ? ORDER BY id", (scan_id,)
             ).fetchall()
         root = Path(history["project_root"] or history["project_path"])
+        try:
+            language_payload = json.loads(history["language_files_json"] or "{}")
+            language_files = {
+                str(language): int(count)
+                for language, count in language_payload.items()
+                if int(count) >= 0
+            }
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            language_files = {}
         stats = ScanStats(
             scan_root=str(root),
             started_at=datetime.fromisoformat(history["started_at"]),
@@ -374,6 +427,7 @@ class Database:
             read_errors=int(history["read_errors"]),
             status=history["status"],
             suppressed_findings=int(history["suppressed_findings"]),
+            language_files=language_files,
         )
         findings = [self._restore_finding(root, row) for row in rows]
         return ScanResult(root=root, findings=findings, stats=stats, scan_id=scan_id)
@@ -658,9 +712,7 @@ class Database:
 
     @staticmethod
     def _validate_custom_rule(pattern: str, severity: str, score: int, languages: list[str]) -> None:
-        compiled = re.compile(pattern)
-        if "value" not in compiled.groupindex:
-            raise ValueError("正则必须包含命名组 (?P<value>...)")
+        validate_rule_pattern(pattern)
         if severity not in {"critical", "high", "medium", "low"} or not 0 <= score <= 100:
             raise ValueError("等级或分数无效")
         if not languages:

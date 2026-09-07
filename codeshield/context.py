@@ -17,7 +17,8 @@ THIRD_PARTY_PATH_WORDS = {
     "site-packages", "_internal", "vendor", "third_party", "node_modules",
     "sbom", "sboms", "dist-info",
 }
-DETECTOR_FEATURE_FILES = {"rules.py", "masking.py", "validation.py", "context.py"}
+GENERATED_PATH_WORDS = {"dist", "build", "release", "target", "coverage", "generated", "out"}
+DETECTOR_FEATURE_FILES = {"rules.py", "masking.py", "validation.py", "context.py", "logging_setup.py"}
 PLACEHOLDER_WORDS = {
     "test", "demo", "example", "dummy", "placeholder", "sample", "changeme",
     "yourapikey", "yourtoken", "yourpassword", "abcdef", "abc123", "password",
@@ -38,6 +39,7 @@ class ContextEvidence:
     is_comment: bool
     is_test_path: bool
     is_third_party_source: bool
+    is_generated_source: bool
     is_detector_rule_feature: bool
     has_complete_private_key: bool
     is_placeholder: bool
@@ -95,6 +97,10 @@ def analyze_context(
             _is_third_party_path(relative_path)
             or bool(source_path and _is_third_party_path(source_path))
         ),
+        is_generated_source=(
+            _is_generated_path(relative_path)
+            or bool(source_path and _is_generated_path(source_path))
+        ),
         is_detector_rule_feature=_is_detector_rule_feature(
             source_path or relative_path,
             line,
@@ -134,6 +140,10 @@ def _is_third_party_path(path: Path) -> bool:
     )
 
 
+def _is_generated_path(path: Path) -> bool:
+    return bool(_path_labels(path) & GENERATED_PATH_WORDS)
+
+
 def _path_labels(path: Path) -> set[str]:
     labels: set[str] = set()
     for part in path.parts:
@@ -166,4 +176,12 @@ def _is_detector_rule_feature(
     if value.startswith("-----BEGIN "):
         return True
     lowered = line.casefold()
-    return path.name.casefold() in {"validation.py", "context.py"} and "password=" in lowered and ".split(" in lowered
+    if path.name.casefold() in {"validation.py", "context.py"}:
+        return "password=" in lowered and ".split(" in lowered
+    if path.name.casefold() == "rules.py":
+        return any(marker in lowered for marker in ("re.compile", "pattern", "regex", "(?p<value>"))
+    if path.name.casefold() == "masking.py":
+        return any(marker in lowered for marker in ("masked", "mask_value", "private_key_headers"))
+    if path.name.casefold() == "logging_setup.py":
+        return any(marker in lowered for marker in ("redact", "private key", "masked"))
+    return False

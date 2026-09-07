@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import os
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from codeshield.config import AppConfig
+from codeshield.config import AppConfig, FULL_IGNORED_DIRS, STANDARD_IGNORED_DIRS
 from codeshield.language import detect_language, file_extension
 from codeshield.models import Finding, Rule, ScanError, ScanProgress, ScanResult, ScanStats
 from codeshield.rules import RuleDetector, finding_sort_key, load_rules
 
 
 BINARY_SAMPLE_SIZE = 8192
+logger = logging.getLogger(__name__)
 
 
 def is_probably_binary(sample: bytes) -> bool:
@@ -66,7 +68,13 @@ class ProjectScanner:
         self.whitelist_matcher = whitelist_matcher
         self.config = config
         self.supported_extensions = {value.lower() for value in config.included_extensions}
-        self.ignored_dirs = {value.casefold() for value in config.ignored_dirs}
+        if config.scan_mode == "full":
+            ignored_dirs = FULL_IGNORED_DIRS
+        elif config.scan_mode == "custom":
+            ignored_dirs = config.ignored_dirs
+        else:
+            ignored_dirs = STANDARD_IGNORED_DIRS
+        self.ignored_dirs = {value.casefold() for value in ignored_dirs}
         self.max_file_size = config.max_file_size_mb * 1024 * 1024
 
     def scan(
@@ -83,6 +91,7 @@ class ProjectScanner:
             raise ValueError(f"扫描目录不存在或不是目录：{scan_root}")
 
         started = datetime.now()
+        logger.info("扫描开始 mode=%s root=%s", self.config.scan_mode, scan_root)
         stats = ScanStats(scan_root=str(scan_root), started_at=started)
         findings = []
         errors: list[ScanError] = []
@@ -96,12 +105,14 @@ class ProjectScanner:
         )
         stats.candidate_files = len(candidates)
         if enumeration_cancelled:
+            logger.info("扫描取消 phase=enumeration root=%s", scan_root)
             return self._finish(scan_root, findings, stats, errors, "cancelled")
 
         self._report(on_progress, "scanning", "", 0, stats, len(findings))
         processed_files = 0
         for path in candidates:
             if cancel_requested():
+                logger.info("扫描取消 phase=scanning root=%s", scan_root)
                 return self._finish(scan_root, findings, stats, errors, "cancelled")
 
             relative = path.relative_to(scan_root)
@@ -148,7 +159,16 @@ class ProjectScanner:
                 len(findings),
             )
 
-        return self._finish(scan_root, findings, stats, errors, "completed")
+        result = self._finish(scan_root, findings, stats, errors, "completed")
+        logger.info(
+            "扫描完成 mode=%s files=%d findings=%d read_errors=%d duration=%.3fs",
+            self.config.scan_mode,
+            stats.scanned_files,
+            len(findings),
+            stats.read_errors,
+            stats.duration_seconds,
+        )
+        return result
 
     def _candidate_files(
         self,

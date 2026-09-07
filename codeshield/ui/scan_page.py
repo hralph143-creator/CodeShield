@@ -5,14 +5,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QElapsedTimer, QThread, QTimer, Signal
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -20,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from codeshield.config import AppConfig
+from codeshield.config import AppConfig, SCAN_MODE_LABELS, SCAN_MODES
 from codeshield.models import ScanProgress, ScanResult
 from codeshield.ui.scan_worker import ScanWorker
 from codeshield.scanner import ProjectScanner
@@ -48,6 +51,7 @@ class ScanPage(QWidget):
         scanner_factory: Callable[[AppConfig], ProjectScanner] = ProjectScanner,
     ) -> None:
         super().__init__()
+        self.setAcceptDrops(True)
         self.config = config
         self.scanner_factory = scanner_factory
         self.state = "idle"
@@ -63,12 +67,12 @@ class ScanPage(QWidget):
 
     def _build_ui(self) -> None:
         page_layout = QVBoxLayout(self)
-        page_layout.setContentsMargins(32, 28, 32, 28)
-        page_layout.setSpacing(14)
+        page_layout.setContentsMargins(28, 24, 28, 24)
+        page_layout.setSpacing(12)
 
         title = QLabel("项目扫描")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("选择本地代码目录，使用当前规则和风险评分引擎进行离线扫描")
+        subtitle = QLabel("选择或拖入本地代码目录，使用当前规则和风险评分引擎进行离线扫描")
         subtitle.setObjectName("pageSubtitle")
         page_layout.addWidget(title)
         page_layout.addWidget(subtitle)
@@ -80,18 +84,34 @@ class ScanPage(QWidget):
         setup_layout.addWidget(self._card_title("扫描目标与配置"))
         path_row = QHBoxLayout()
         self.path_edit = QLineEdit()
+        self.path_edit.setObjectName("pathField")
         self.path_edit.setReadOnly(True)
-        self.path_edit.setPlaceholderText("请选择需要扫描的本地项目目录")
+        self.path_edit.setAcceptDrops(False)
+        self.path_edit.setPlaceholderText("选择项目，或将项目文件夹拖到此页面")
         self.select_button = QPushButton("选择项目")
         self.select_button.setObjectName("secondaryButton")
+        self.select_button.setMinimumWidth(104)
         self.select_button.clicked.connect(self.choose_directory)
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(self.select_button)
         setup_layout.addLayout(path_row)
 
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("扫描模式"))
+        self.mode_combo = QComboBox()
+        for mode in SCAN_MODES:
+            self.mode_combo.addItem(SCAN_MODE_LABELS[mode], mode)
+        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(self.config.scan_mode)))
+        self.mode_combo.setMinimumWidth(136)
+        self.mode_hint = QLabel()
+        self.mode_hint.setObjectName("mutedText")
+        mode_row.addWidget(self.mode_combo)
+        mode_row.addWidget(self.mode_hint, 1)
+        setup_layout.addLayout(mode_row)
+
         config_layout = QGridLayout()
-        config_layout.setHorizontalSpacing(18)
-        config_layout.setVerticalSpacing(8)
+        config_layout.setHorizontalSpacing(12)
+        config_layout.setVerticalSpacing(12)
         config_layout.addWidget(QLabel("单文件上限"), 0, 0)
         self.size_spin = QSpinBox()
         self.size_spin.setRange(1, 100)
@@ -101,35 +121,44 @@ class ScanPage(QWidget):
         self.personal_info_check = QCheckBox("检测邮箱、手机号和身份证号")
         self.personal_info_check.setChecked(self.config.detect_personal_info)
         config_layout.addWidget(self.personal_info_check, 0, 2, 1, 2)
-        extensions = QLabel(f"文件类型：{len(self.config.included_extensions)} 项")
-        ignored = QLabel(f"忽略目录：{len(self.config.ignored_dirs)} 项")
-        extensions.setObjectName("mutedText")
-        ignored.setObjectName("mutedText")
-        config_layout.addWidget(extensions, 0, 4)
-        config_layout.addWidget(ignored, 0, 5)
+        config_layout.addWidget(QLabel("扩展名"), 1, 0)
+        self.extensions_edit = QLineEdit(", ".join(self.config.included_extensions))
+        self.extensions_edit.setPlaceholderText(".py, .js, .env")
+        config_layout.addWidget(self.extensions_edit, 1, 1)
+        config_layout.addWidget(QLabel("忽略目录"), 1, 2)
+        self.ignored_dirs_edit = QLineEdit(", ".join(self.config.ignored_dirs))
+        self.ignored_dirs_edit.setPlaceholderText(".git, node_modules, build")
+        config_layout.addWidget(self.ignored_dirs_edit, 1, 3)
+        config_layout.setColumnStretch(1, 1)
         config_layout.setColumnStretch(3, 1)
         setup_layout.addLayout(config_layout)
         page_layout.addWidget(setup_panel)
 
-        action_row = QHBoxLayout()
+        action_bar = QFrame()
+        action_bar.setObjectName("actionBar")
+        action_row = QHBoxLayout(action_bar)
+        action_row.setContentsMargins(14, 10, 14, 10)
+        action_row.setSpacing(10)
         self.start_button = QPushButton("开始扫描")
         self.start_button.setObjectName("primaryButton")
         self.start_button.setMinimumWidth(120)
         self.start_button.clicked.connect(self.start_scan)
         self.cancel_button = QPushButton("取消扫描")
         self.cancel_button.setObjectName("dangerButton")
+        self.cancel_button.setMinimumWidth(104)
         self.cancel_button.clicked.connect(self.cancel_scan)
         self.view_button = QPushButton("查看扫描结果")
         self.view_button.setObjectName("secondaryButton")
-        self.view_button.clicked.connect(self.view_results_requested)
+        self.view_button.setMinimumWidth(132)
+        self.view_button.clicked.connect(self.request_view_results)
         action_row.addWidget(self.start_button)
         action_row.addWidget(self.cancel_button)
         action_row.addStretch()
         action_row.addWidget(self.view_button)
-        page_layout.addLayout(action_row)
+        page_layout.addWidget(action_bar)
 
         status_card = QFrame()
-        status_card.setObjectName("surfacePanel")
+        status_card.setObjectName("scanStatusCard")
         status_layout = QGridLayout(status_card)
         status_layout.setContentsMargins(18, 14, 18, 14)
         status_layout.setHorizontalSpacing(24)
@@ -175,17 +204,48 @@ class ScanPage(QWidget):
         privacy_note.setWordWrap(True)
         page_layout.addWidget(privacy_note)
         page_layout.addStretch()
+        self.mode_combo.currentIndexChanged.connect(self._update_mode_controls)
+        self._update_mode_controls()
 
     def choose_directory(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择要扫描的项目")
         if selected:
             self.set_project_path(Path(selected))
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._directory_from_urls(event.mimeData().urls()) is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        directory = self._directory_from_urls(event.mimeData().urls())
+        if directory is None:
+            event.ignore()
+            return
+        if self.state in {"scanning", "cancelling"}:
+            QMessageBox.information(self, "扫描正在进行", "当前扫描结束后才能更换项目目录。")
+            event.ignore()
+            return
+        self.set_project_path(directory)
+        self.notice.setText("已从拖放载入项目目录，可以开始扫描。")
+        event.acceptProposedAction()
+
     def set_project_path(self, path: Path) -> None:
         self.path_edit.setText(str(path))
         self.path_edit.setCursorPosition(0)
         self.notice.setText("目录已选择，可以开始扫描。")
         self._update_controls()
+
+    @staticmethod
+    def _directory_from_urls(urls) -> Path | None:
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.exists() and path.is_dir():
+                return path
+        return None
 
     def start_scan(self) -> None:
         if self.thread is not None and self.thread.isRunning():
@@ -194,15 +254,20 @@ class ScanPage(QWidget):
         scan_root = Path(self.path_edit.text().strip())
         if not self.path_edit.text().strip():
             self.notice.setText("请先选择需要扫描的项目目录。")
+            QMessageBox.information(self, "尚未选择项目", "请先点击“选择项目”，选择需要扫描的本地代码目录。")
             return
         if not scan_root.exists() or not scan_root.is_dir():
             self.notice.setText("所选项目目录不存在或无法访问。")
+            QMessageBox.warning(self, "项目目录不可用", "所选项目目录不存在或无法访问，请重新选择。")
             return
 
         task_config = replace(
             self.config,
+            scan_mode=self.mode_combo.currentData(),
             max_file_size_mb=self.size_spin.value(),
             detect_personal_info=self.personal_info_check.isChecked(),
+            included_extensions=self._extensions(),
+            ignored_dirs=self._ignored_dirs(),
         )
         self.thread = QThread(self)
         self.worker = ScanWorker(task_config, scan_root, self.scanner_factory)
@@ -228,6 +293,10 @@ class ScanPage(QWidget):
 
     def cancel_scan(self) -> None:
         if self.worker is None or self.state not in {"scanning", "cancelling"}:
+            QMessageBox.information(self, "当前没有扫描", "请先选择项目并开始扫描，然后才能取消。")
+            return
+        if self.state == "cancelling":
+            QMessageBox.information(self, "正在取消", "取消请求已经发送，请等待当前文件处理完成。")
             return
         self.worker.request_cancel()
         self._set_state("cancelling")
@@ -267,6 +336,12 @@ class ScanPage(QWidget):
         )
         self.scan_cancelled.emit(result)
 
+    def request_view_results(self) -> None:
+        if not self.has_results:
+            QMessageBox.information(self, "暂无扫描结果", "请先完成一次项目扫描，然后再查看扫描结果。")
+            return
+        self.view_results_requested.emit()
+
     def _on_failed(self, message: str) -> None:
         self.elapsed_timer.stop()
         self._set_state("failed")
@@ -297,15 +372,33 @@ class ScanPage(QWidget):
         busy = self.state in {"scanning", "cancelling"}
         if self.thread is not None and self.thread.isRunning() and self.state in {"completed", "cancelled", "failed"}:
             busy = True
-        path = Path(self.path_edit.text().strip()) if self.path_edit.text().strip() else None
-        has_valid_path = path is not None and path.exists() and path.is_dir()
-        self.start_button.setEnabled(not busy and has_valid_path)
-        self.start_button.setToolTip("" if has_valid_path else "请先选择有效的项目目录")
+        # 空目录时也允许点击，让用户能立即得到页面内提示；扫描期间才真正禁用。
+        self.start_button.setEnabled(not busy)
+        self.start_button.setToolTip("扫描进行中，请稍候" if busy else "开始扫描；尚未选择目录时会给出提示")
         self.select_button.setEnabled(not busy)
-        self.size_spin.setEnabled(not busy)
-        self.personal_info_check.setEnabled(not busy)
-        self.cancel_button.setEnabled(self.state == "scanning")
-        self.view_button.setEnabled(self.has_results and not busy)
+        self.select_button.setToolTip("扫描进行中，暂不能更换目录" if busy else "选择需要扫描的本地项目目录")
+        self.mode_combo.setEnabled(not busy)
+        custom = self.mode_combo.currentData() == "custom"
+        self.size_spin.setEnabled(not busy and custom)
+        self.personal_info_check.setEnabled(not busy and custom)
+        self.extensions_edit.setEnabled(not busy and custom)
+        self.ignored_dirs_edit.setEnabled(not busy and custom)
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.setToolTip(
+            "停止当前扫描" if self.state == "scanning" else "开始扫描后可在这里取消"
+        )
+        self.view_button.setEnabled(not busy)
+        self.view_button.setToolTip(
+            "打开本次扫描结果" if self.has_results and not busy else "完成一次扫描后即可查看结果"
+        )
+        custom_tip = "" if custom else "切换到“自定义扫描”后可修改此项"
+        for control in (
+            self.size_spin,
+            self.personal_info_check,
+            self.extensions_edit,
+            self.ignored_dirs_edit,
+        ):
+            control.setToolTip("扫描进行中，暂不能修改" if busy else custom_tip)
 
     def _reset_progress(self) -> None:
         self.progress_bar.setRange(0, 100)
@@ -317,6 +410,33 @@ class ScanPage(QWidget):
         self.elapsed_value.setText("00:00")
         self.current_file.setText("当前文件：—")
         self.current_file.setToolTip("当前文件：—")
+
+    def set_config(self, config: AppConfig) -> None:
+        self.config = config
+        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(config.scan_mode)))
+        self.size_spin.setValue(config.max_file_size_mb)
+        self.personal_info_check.setChecked(config.detect_personal_info)
+        self.extensions_edit.setText(", ".join(config.included_extensions))
+        self.ignored_dirs_edit.setText(", ".join(config.ignored_dirs))
+        self._update_mode_controls()
+
+    def _update_mode_controls(self) -> None:
+        mode = self.mode_combo.currentData()
+        hints = {
+            "standard": "推荐：聚焦项目源码和配置，跳过明确的依赖与构建噪声。",
+            "full": "审计：包含依赖、测试和构建产物，仍执行二进制与大小保护。",
+            "custom": "高级：使用下方文件上限、个人信息、扩展名和忽略目录设置。",
+        }
+        self.mode_hint.setText(hints.get(mode, ""))
+        self._update_controls()
+
+    def _extensions(self) -> list[str]:
+        values = [item.strip().lower() for item in self.extensions_edit.text().split(",") if item.strip()]
+        return [item if item.startswith(".") else f".{item}" for item in values] or list(self.config.included_extensions)
+
+    def _ignored_dirs(self) -> list[str]:
+        values = [item.strip() for item in self.ignored_dirs_edit.text().split(",") if item.strip()]
+        return values or list(self.config.ignored_dirs)
 
     def _update_elapsed(self) -> None:
         if not self.elapsed.isValid():

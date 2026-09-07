@@ -3,11 +3,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
 except ImportError:
     QApplication = None
 
@@ -22,6 +23,7 @@ from codeshield.ui.reports_page import ReportsPage
 from codeshield.ui.results_page import ResultsPage
 from codeshield.ui.rules_page import RulesPage
 from codeshield.ui.scan_page import ScanPage
+from codeshield.ui.settings_page import SettingsPage
 from codeshield.ui.whitelist_page import WhitelistPage
 
 
@@ -42,14 +44,19 @@ class MainWindowTests(unittest.TestCase):
 
             window = MainWindow(Runtime(config, store, database))
 
-            self.assertEqual(window.navigation.count(), 8)
-            self.assertEqual(window.stack.count(), 9)
-            self.assertNotIn("关于", [window.navigation.item(row).text() for row in range(8)])
+            self.assertEqual(window.navigation.count(), 7)
+            self.assertEqual(window.stack.count(), 8)
+            navigation_titles = [window.navigation.item(row).text() for row in range(7)]
+            self.assertNotIn("关于", navigation_titles)
+            self.assertNotIn("白名单", navigation_titles)
             self.assertIsInstance(window.scan_page, ScanPage)
             self.assertIsInstance(window.results_page, ResultsPage)
             self.assertIsInstance(window.history_page, HistoryPage)
             self.assertIsInstance(window.rules_page, RulesPage)
             self.assertIsInstance(window.whitelist_page, WhitelistPage)
+            self.assertEqual(window.rule_management_tabs.count(), 2)
+            self.assertEqual(window.rule_management_tabs.tabText(0), "规则管理")
+            self.assertEqual(window.rule_management_tabs.tabText(1), "白名单")
             self.assertIsInstance(window.comparison_page, ComparisonPage)
             self.assertIsInstance(window.reports_page, ReportsPage)
             self.assertEqual(window.rules_page.table.rowCount(), 11)
@@ -71,11 +78,57 @@ class MainWindowTests(unittest.TestCase):
             window._handle_scan_completed(result)
             self.assertEqual(window.history_page.table.rowCount(), 1)
             self.assertTrue(all(item.database_id for item in result.findings))
+            self.assertEqual(
+                window.operational_values["candidates"].text(),
+                str(result.stats.candidate_files),
+            )
+            self.assertEqual(window.language_table.rowCount(), len(result.stats.language_files))
+            window._load_latest_scan_path()
+            self.assertEqual(window.navigation.currentRow(), 1)
+            self.assertEqual(Path(window.scan_page.path_edit.text()), root)
+            window._open_latest_result()
+            self.assertEqual(window.navigation.currentRow(), 2)
             first_id = id(window.results_page)
             scan_id = database.list_scan_history()[0].scan_id
             window._open_history(scan_id)
             self.assertEqual(id(window.results_page), first_id)
             self.assertEqual(window.results_page.table.rowCount(), len(result.findings))
+            window.close()
+
+    def test_stack_pages_remain_isolated_during_repeated_navigation(self) -> None:
+        from PySide6.QtCore import Qt
+        from codeshield.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory))
+            database = Database(Path(directory) / "test.db")
+            database.initialize()
+            window = MainWindow(Runtime(store.load(), store, database))
+            window.show()
+            self.app.processEvents()
+
+            surfaces = [*window.pages.values(), window.comparison_page]
+            self.assertTrue(all(page.objectName() == "pageSurface" for page in surfaces))
+            self.assertTrue(
+                all(page.testAttribute(Qt.WidgetAttribute.WA_StyledBackground) for page in surfaces)
+            )
+            for row in (1, 4, 0, 3, 2, 0):
+                window.navigation.setCurrentRow(row)
+                self.app.processEvents()
+                current = window.stack.currentWidget()
+                self.assertIs(current, window.pages[window._nav_kinds[row]])
+                self.assertEqual(
+                    [page for page in surfaces if page.isVisibleTo(window.stack)],
+                    [current],
+                )
+
+            window._set_stack_page(window.comparison_page)
+            self.app.processEvents()
+            self.assertIs(window.stack.currentWidget(), window.comparison_page)
+            self.assertEqual(
+                [page for page in surfaces if page.isVisibleTo(window.stack)],
+                [window.comparison_page],
+            )
             window.close()
 
     def test_phase5_pages_refresh_from_database(self) -> None:
@@ -101,13 +154,13 @@ class MainWindowTests(unittest.TestCase):
             self.assertEqual(whitelist.table.rowCount(), 1)
             self.assertEqual(rules.table.rowCount(), 12)
             self.assertIn("config/demo.py", whitelist.table.item(0, 1).text())
-            self.assertFalse(whitelist.delete_button.isEnabled())
+            self.assertTrue(whitelist.delete_button.isEnabled())
             whitelist.table.selectRow(0)
             self.assertTrue(whitelist.delete_button.isEnabled())
             rules.table.selectRow(0)
             self.assertTrue(rules.toggle_button.isEnabled())
-            self.assertFalse(rules.edit_button.isEnabled())
-            self.assertFalse(rules.delete_button.isEnabled())
+            self.assertTrue(rules.edit_button.isEnabled())
+            self.assertTrue(rules.delete_button.isEnabled())
             rules.table.selectRow(rules.table.rowCount() - 1)
             self.assertTrue(rules.edit_button.isEnabled())
             self.assertTrue(rules.delete_button.isEnabled())
@@ -141,7 +194,7 @@ class MainWindowTests(unittest.TestCase):
             reports_page = ReportsPage(database)
             self.assertEqual(reports_page.scan_combo.count(), 2)
             self.assertEqual(reports_page.report_type.count(), 2)
-            self.assertFalse(reports_page.export_button.isEnabled())
+            self.assertTrue(reports_page.export_button.isEnabled())
             reports_page.output_dir.setText(directory)
             self.assertTrue(reports_page.export_button.isEnabled())
             comparison_page.close()
@@ -152,7 +205,7 @@ class MainWindowTests(unittest.TestCase):
             database = Database(Path(directory) / "test.db")
             database.initialize()
             page = ReportsPage(database)
-            self.assertFalse(page.export_button.isEnabled())
+            self.assertTrue(page.export_button.isEnabled())
             self.assertIn("暂无可导出", page.notice.text())
             page.close()
 
@@ -165,15 +218,101 @@ class MainWindowTests(unittest.TestCase):
             stats = ScanStats(scan_root="demo", started_at=datetime.now(), status="completed")
             result = ScanResult(Path("demo"), [], stats)
 
-            self.assertFalse(scan_page.start_button.isEnabled())
-            scan_page.start_scan()
+            self.assertTrue(scan_page.start_button.isEnabled())
+            with patch.object(QMessageBox, "information") as information:
+                scan_page.start_button.click()
+                information.assert_called_once()
             self.assertEqual(scan_page.state, "idle")
             self.assertIn("请先选择", scan_page.notice.text())
+            self.assertTrue(scan_page.cancel_button.isEnabled())
+            self.assertIn("开始扫描后", scan_page.cancel_button.toolTip())
+            self.assertTrue(scan_page.view_button.isEnabled())
+            self.assertIn("完成一次扫描后", scan_page.view_button.toolTip())
+            from codeshield.ui.styles import APP_STYLE
+            self.assertIn("#primaryButton:disabled", APP_STYLE)
+            self.assertIn("#dangerButton:disabled", APP_STYLE)
             results_page.set_result(result)
             self.assertEqual(results_page.table.rowCount(), 0)
             self.assertIn("未发现", results_page.summary_label.text())
+            from PySide6.QtCore import QUrl
+            self.assertEqual(
+                scan_page._directory_from_urls([QUrl.fromLocalFile(directory)]),
+                Path(directory),
+            )
             scan_page.close()
             results_page.close()
+
+    def test_action_buttons_show_precondition_dialogs_instead_of_being_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = Database(root / "test.db")
+            database.initialize()
+            scan_page = ScanPage(ConfigStore(root / "settings").load())
+            history = HistoryPage(database)
+            whitelist = WhitelistPage(database)
+            rules = RulesPage(database)
+            reports = ReportsPage(database)
+            results = ResultsPage()
+
+            with patch.object(QMessageBox, "information") as information:
+                scan_page.start_button.click()
+                scan_page.cancel_button.click()
+                scan_page.view_button.click()
+                history.compare_button.click()
+                history.delete_button.click()
+                whitelist.toggle_button.click()
+                whitelist.delete_button.click()
+                rules.edit_button.click()
+                rules.toggle_button.click()
+                rules.delete_button.click()
+                reports.export_button.click()
+                reports.open_button.click()
+                results.whitelist_button.click()
+                results.copy_button.click()
+                results.open_location_button.click()
+                self.assertEqual(information.call_count, 15)
+
+            for button in (
+                scan_page.start_button,
+                scan_page.cancel_button,
+                scan_page.view_button,
+                history.compare_button,
+                history.delete_button,
+                whitelist.toggle_button,
+                whitelist.delete_button,
+                rules.edit_button,
+                rules.toggle_button,
+                rules.delete_button,
+                reports.choose_button,
+                reports.export_button,
+                reports.open_button,
+                results.whitelist_button,
+                results.copy_button,
+                results.open_location_button,
+            ):
+                self.assertTrue(button.isEnabled(), button.text())
+
+            for page in (scan_page, history, whitelist, rules, reports, results):
+                page.close()
+
+    def test_settings_restore_changes_config_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = ConfigStore(root / "settings")
+            config = store.load()
+            database = Database(root / "test.db")
+            database.initialize()
+            result = ProjectScanner(config).scan(root / "settings")
+            database.save_scan_result(result)
+            page = SettingsPage(config, store)
+            page.mode_combo.setCurrentIndex(page.mode_combo.findData("full"))
+            page.save()
+            self.assertEqual(store.load().scan_mode, "full")
+            page.reset_button.click()
+            page.save_button.click()
+            self.assertEqual(store.load().scan_mode, "standard")
+            self.assertEqual(len(database.list_scan_history()), 1)
+            page.close()
 
     def test_results_page_renders_real_findings(self) -> None:
         root = Path(__file__).resolve().parent.parent / "demo_project"
@@ -186,6 +325,14 @@ class MainWindowTests(unittest.TestCase):
             self.assertIn("/ 100", page.detail_title.text())
             self.assertNotEqual(page.masked_value.text(), "—")
             self.assertGreater(page.factors.rowCount(), 0)
+            with patch.object(QMessageBox, "information") as information:
+                page.copy_button.click()
+                information.assert_called_once()
+            self.assertIn("脱敏内容：", QApplication.clipboard().text())
+            self.assertIn(page.current_finding.masked_value, QApplication.clipboard().text())
+            with patch("codeshield.ui.results_page.QDesktopServices.openUrl", return_value=True) as open_url:
+                page.open_location_button.click()
+                open_url.assert_called_once()
             private_row = next(
                 index for index, finding in enumerate(page.filtered_findings)
                 if finding.risk_type == "Private Key"

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from codeshield.config import AppConfig
+from codeshield.errors import user_error
 from codeshield.scanner import ProjectScanner
+
+
+logger = logging.getLogger(__name__)
 
 
 class ScanWorker(QObject):
@@ -40,11 +45,13 @@ class ScanWorker(QObject):
             )
         except Exception as exc:
             if isinstance(exc, ValueError):
-                message = "无法扫描所选目录，请检查路径和规则配置。"
+                code = "RULE-001"
             elif isinstance(exc, OSError):
-                message = "扫描时无法访问文件系统。"
+                code = "SCAN-002"
             else:
-                message = "扫描任务启动失败。"
+                code = "SCAN-003"
+            logger.exception("%s 顶层扫描异常 type=%s root=%s", code, type(exc).__name__, self.scan_root)
+            message = user_error(code)
             self.failed.emit(message)
             return
 

@@ -60,17 +60,26 @@ def assess_risk(rule: Rule, value: str, context: ContextEvidence, config: AppCon
     if format_bonus:
         factors.append(RiskFactor("credential_format", format_bonus, "凭证格式证据较强"))
 
+    source_identified = False
     # 注释、测试目录和占位值仍可能包含真凭证，因此只降权而不删除结果。
     if context.is_comment:
         factors.append(RiskFactor("comment", -12, "位于注释中"))
     if context.is_test_path:
         factors.append(RiskFactor("test_path", -10, "测试或演示数据：风险降低"))
+        source_identified = True
     if context.is_third_party_source:
         factors.append(RiskFactor("third_party_source", -15, "第三方依赖/元数据：风险降低"))
+        source_identified = True
         if rule.risk_type == "Email":
             factors.append(RiskFactor("public_contact", -8, "公开联系方式特征"))
     if context.is_detector_rule_feature:
         factors.append(RiskFactor("detector_rule_feature", -40, "检测器内部规则特征：风险降低"))
+        source_identified = True
+    if context.is_generated_source and not context.is_third_party_source:
+        factors.append(RiskFactor("generated_source", -8, "生成或发布产物：风险降低"))
+        source_identified = True
+    if not source_identified:
+        factors.append(RiskFactor("project_source", 0, "来源：项目源码"))
     if context.has_demo_marker:
         factors.append(RiskFactor("demo_marker", -8, "附近标记为无效演示数据"))
     if context.is_placeholder:

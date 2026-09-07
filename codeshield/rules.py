@@ -12,6 +12,7 @@ from codeshield.context import analyze_context
 from codeshield.masking import mask_value
 from codeshield.models import Finding, Rule
 from codeshield.risk import assess_risk
+from codeshield.resources import resource_path
 from codeshield.validation import database_credential_kind, validate_china_id, validate_jwt_structure
 
 
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 PERSONAL_INFO_TYPES = {"Email", "Phone", "ID Card"}
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+MAX_REGEX_LENGTH = 2000
+NESTED_QUANTIFIER = re.compile(r"\([^)]*[+*][^)]*\)[+*{]")
 
 
 @dataclass(slots=True)
@@ -28,7 +31,7 @@ class RuleLoadResult:
 
 
 def builtin_rules_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "rules" / "builtin_rules.json"
+    return resource_path("rules", "builtin_rules.json")
 
 
 def load_rules(path: Path | None = None) -> RuleLoadResult:
@@ -54,7 +57,7 @@ def load_rules(path: Path | None = None) -> RuleLoadResult:
         except (KeyError, TypeError, ValueError, re.error) as exc:
             rule_id = item.get("id", f"#{index}")
             errors.append(f"规则 {rule_id} 已禁用：{type(exc).__name__}")
-            logger.warning("规则 %s 无法加载：%s", rule_id, type(exc).__name__)
+            logger.warning("RULE-001 规则 %s 无法加载：%s", rule_id, type(exc).__name__)
             continue
         rules.append(rule)
     return RuleLoadResult(rules, errors)
@@ -75,8 +78,10 @@ def _build_rule(item: dict[str, object]) -> Rule:
     if not isinstance(languages, list) or not all(isinstance(value, str) for value in languages):
         raise TypeError("languages must be a string array")
 
+    pattern_text = str(item["pattern"])
+    validate_rule_pattern(pattern_text)
     # 命名组让检测器只脱敏真正的凭证部分，避免把变量名和整行代码一起隐藏。
-    pattern = re.compile(str(item["pattern"]))
+    pattern = re.compile(pattern_text)
     if "value" not in pattern.groupindex:
         raise ValueError("pattern requires a value group")
 
@@ -91,6 +96,17 @@ def _build_rule(item: dict[str, object]) -> Rule:
         description,
         suggestion,
     )
+
+
+def validate_rule_pattern(pattern: str) -> re.Pattern[str]:
+    if len(pattern) > MAX_REGEX_LENGTH:
+        raise ValueError(f"正则表达式不能超过 {MAX_REGEX_LENGTH} 个字符")
+    if NESTED_QUANTIFIER.search(pattern):
+        raise ValueError("正则表达式包含容易导致长时间回溯的嵌套重复")
+    compiled = re.compile(pattern)
+    if "value" not in compiled.groupindex:
+        raise ValueError("正则必须包含命名组 (?P<value>...)")
+    return compiled
 
 
 class RuleDetector:
@@ -111,12 +127,17 @@ class RuleDetector:
             for rule in self.rules:
                 if language not in rule.languages:
                     continue
-                for match in rule.pattern.finditer(line):
-                    span = match.span("value")
-                    previous = line_matches.get(span)
-                    if previous is None or rule.score > previous[0].score:
-                        # 明确格式规则与通用赋值规则重叠时，只保留证据更强的一条结果。
-                        line_matches[span] = (rule, match)
+                try:
+                    matches = rule.pattern.finditer(line)
+                    for match in matches:
+                        span = match.span("value")
+                        previous = line_matches.get(span)
+                        if previous is None or rule.score > previous[0].score:
+                            # 明确格式规则与通用赋值规则重叠时，只保留证据更强的一条结果。
+                            line_matches[span] = (rule, match)
+                except (re.error, RuntimeError, RecursionError) as exc:
+                    logger.warning("RULE-001 规则 %s 匹配失败，已隔离：%s", rule.id, type(exc).__name__)
+                    continue
 
             for rule, match in line_matches.values():
                 value = match.group("value")

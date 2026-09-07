@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -42,8 +44,8 @@ class HistoryPage(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(14)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(12)
         title = QLabel("扫描历史")
         title.setObjectName("pageTitle")
         subtitle = QLabel("查看本机保存的历史扫描记录")
@@ -62,7 +64,6 @@ class HistoryPage(QWidget):
             self.status_filter.addItem(HISTORY_STATUS_LABELS[value], value)
         refresh_button = QPushButton("刷新")
         self.compare_button = QPushButton("与上次扫描比较")
-        self.compare_button.setEnabled(False)
         self.delete_button = QPushButton("删除记录")
         tools.addWidget(self.search, 1)
         tools.addWidget(self.status_filter)
@@ -86,6 +87,10 @@ class HistoryPage(QWidget):
         for column in range(2, 8):
             self.table.setColumnWidth(column, 72)
         self.table.setColumnWidth(8, 75)
+        self.empty_label = QLabel("暂无扫描记录。完成第一次项目扫描后，历史记录会显示在这里。")
+        self.empty_label.setObjectName("emptyText")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.empty_label)
         layout.addWidget(self.table, 1)
 
         self.search.textChanged.connect(self.refresh)
@@ -97,10 +102,18 @@ class HistoryPage(QWidget):
         self.table.itemSelectionChanged.connect(self._update_compare_button)
 
     def refresh(self) -> None:
-        self.records = self.database.list_scan_history(
-            self.search.text(), self.status_filter.currentData() or ""
-        )
+        try:
+            self.records = self.database.list_scan_history(
+                self.search.text(), self.status_filter.currentData() or ""
+            )
+        except sqlite3.Error:
+            self.records = []
+            self.empty_label.setText("扫描历史加载失败，请检查本地数据库。（DB-001）")
+        else:
+            self.empty_label.setText("暂无扫描记录。完成第一次项目扫描后，历史记录会显示在这里。")
         self.table.setRowCount(len(self.records))
+        self.empty_label.setVisible(not self.records)
+        self.table.setVisible(bool(self.records))
         for row, record in enumerate(self.records):
             finished = record.finished_at or record.started_at
             values = (
@@ -138,6 +151,7 @@ class HistoryPage(QWidget):
     def delete_selected(self) -> None:
         row = self.table.currentRow()
         if not 0 <= row < len(self.records):
+            QMessageBox.information(self, "尚未选择记录", "请先在表格中选择一条扫描记录。")
             return
         record = self.records[row]
         answer = QMessageBox.question(
@@ -153,8 +167,17 @@ class HistoryPage(QWidget):
 
     def compare_selected(self) -> None:
         row = self.table.currentRow()
-        if 0 <= row < len(self.records) and self.database.previous_completed_scan(self.records[row].scan_id):
-            self.compare_requested.emit(self.records[row].scan_id)
+        if not 0 <= row < len(self.records):
+            QMessageBox.information(self, "尚未选择记录", "请先选择一条已完成的扫描记录。")
+            return
+        record = self.records[row]
+        if record.status != "completed":
+            QMessageBox.information(self, "无法比较", "只能比较已完成的扫描记录。")
+            return
+        if self.database.previous_completed_scan(record.scan_id) is None:
+            QMessageBox.information(self, "暂无比较基线", "该项目还没有更早的已完成扫描记录。")
+            return
+        self.compare_requested.emit(record.scan_id)
 
     def _update_compare_button(self) -> None:
         row = self.table.currentRow()
@@ -163,8 +186,8 @@ class HistoryPage(QWidget):
             and self.records[row].status == "completed"
             and self.database.previous_completed_scan(self.records[row].scan_id) is not None
         )
-        self.compare_button.setEnabled(available)
+        self.compare_button.setEnabled(True)
         self.compare_button.setToolTip("" if available else "暂无可比较的历史扫描")
         selected = 0 <= row < len(self.records)
-        self.delete_button.setEnabled(selected)
+        self.delete_button.setEnabled(True)
         self.delete_button.setToolTip("" if selected else "请先选择一条扫描记录")

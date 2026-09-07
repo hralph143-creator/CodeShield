@@ -63,7 +63,7 @@ class ScanWorkerTests(unittest.TestCase):
         worker.failed.connect(failures.append)
         worker.run()
 
-        self.assertEqual(failures, ["扫描任务启动失败。"])
+        self.assertEqual(failures, ["扫描任务发生异常。（SCAN-003）"])
         self.assertNotIn("internal details", failures[0])
 
     def test_qthread_finishes_after_scan(self) -> None:

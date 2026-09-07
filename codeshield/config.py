@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -12,14 +13,26 @@ DEFAULT_EXTENSIONS = [
     ".properties", ".yaml", ".yml", ".json", ".xml", ".toml",
 ]
 
-DEFAULT_IGNORED_DIRS = [
+SCAN_MODES = ("standard", "full", "custom")
+SCAN_MODE_LABELS = {
+    "standard": "标准扫描",
+    "full": "完整扫描",
+    "custom": "自定义扫描",
+}
+
+STANDARD_IGNORED_DIRS = [
     ".git", ".svn", ".idea", ".vscode", "node_modules", "dist", "build",
-    "target", "venv", ".venv", "__pycache__", "coverage", ".cache",
+    "release", "target", "venv", ".venv", "__pycache__", "coverage", ".cache",
 ]
+FULL_IGNORED_DIRS = [".git", ".svn", "__pycache__", ".cache"]
+DEFAULT_IGNORED_DIRS = STANDARD_IGNORED_DIRS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
 class AppConfig:
+    scan_mode: str = "standard"
     max_file_size_mb: int = 5
     detect_personal_info: bool = True
     included_extensions: list[str] = field(default_factory=lambda: DEFAULT_EXTENSIONS.copy())
@@ -30,6 +43,7 @@ class AppConfig:
     @classmethod
     def from_dict(cls, values: dict[str, object]) -> "AppConfig":
         defaults = cls()
+        scan_mode = values.get("scan_mode", defaults.scan_mode)
         size = values.get("max_file_size_mb", defaults.max_file_size_mb)
         personal_info = values.get("detect_personal_info", defaults.detect_personal_info)
         extensions = values.get("included_extensions", defaults.included_extensions)
@@ -37,6 +51,8 @@ class AppConfig:
         min_entropy_length = values.get("min_entropy_length", defaults.min_entropy_length)
         entropy_threshold = values.get("entropy_threshold", defaults.entropy_threshold)
 
+        if not isinstance(scan_mode, str) or scan_mode not in SCAN_MODES:
+            scan_mode = defaults.scan_mode
         if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 100:
             size = defaults.max_file_size_mb
         if not isinstance(personal_info, bool):
@@ -59,6 +75,7 @@ class AppConfig:
             entropy_threshold = defaults.entropy_threshold
 
         return cls(
+            scan_mode=scan_mode,
             max_file_size_mb=size,
             detect_personal_info=personal_info,
             included_extensions=list(extensions),
@@ -88,9 +105,14 @@ class ConfigStore:
 
         try:
             values = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            logger.warning("配置读取失败，已使用默认设置：%s", type(exc).__name__)
             return AppConfig()
         return AppConfig.from_dict(values) if isinstance(values, dict) else AppConfig()
+
+    def prepare_data_dir(self) -> Path:
+        self._ensure_data_dir()
+        return self.data_dir
 
     def save(self, config: AppConfig) -> None:
         self._ensure_data_dir()

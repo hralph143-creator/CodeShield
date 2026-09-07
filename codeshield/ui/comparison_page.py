@@ -35,8 +35,8 @@ class ComparisonPage(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(14)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(12)
         title = QLabel("扫描对比")
         title.setObjectName("pageTitle")
         self.subtitle = QLabel("比较同一项目最近两次已完成扫描")

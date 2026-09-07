@@ -120,7 +120,7 @@ class Phase6Tests(unittest.TestCase):
     def test_zero_and_large_reports_generate(self) -> None:
         record, result = self._saved_result()
         empty = ScanResult(result.root, [], result.stats, scan_id=result.scan_id)
-        self.assertIn("本次扫描没有风险项", build_html_report(record, empty))
+        self.assertIn("本次扫描未发现符合当前检测规则的风险项", build_html_report(record, empty))
         large = ScanResult(result.root, result.findings * 100, result.stats, scan_id=result.scan_id)
         self.assertGreater(len(build_html_report(record, large)), 100_000)
 

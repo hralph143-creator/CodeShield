@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import math
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
-APP_ICON_PATH = PROJECT_DIR / "1.png"
+from codeshield.resources import resource_path
+
+APP_ICON_PATH = resource_path("1.png")
+WINDOWS_ICON_PATH = resource_path("resources", "app_icon.ico")
 
 
 def configure_windows_app_id() -> None:
@@ -28,8 +29,9 @@ def configure_windows_app_id() -> None:
 
 def app_icon() -> QIcon:
     icon = QIcon()
-    if APP_ICON_PATH.exists():
-        icon.addFile(str(APP_ICON_PATH))
+    for path in (WINDOWS_ICON_PATH, APP_ICON_PATH):
+        if path.exists():
+            icon.addFile(str(path))
     return icon
 
 

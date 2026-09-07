@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from codeshield.database import Database
 from codeshield.models import ManagedRule
+from codeshield.rules import validate_rule_pattern
 from codeshield.ui.result_data import RISK_TYPE_LABELS, SEVERITY_COLORS, SEVERITY_LABELS
 
 
@@ -86,12 +88,9 @@ class RuleDialog(QDialog):
             QMessageBox.warning(self, "无法保存", "请输入规则名称。")
             return
         try:
-            compiled = re.compile(self.pattern.toPlainText())
-        except re.error as exc:
+            validate_rule_pattern(self.pattern.toPlainText())
+        except (re.error, ValueError) as exc:
             QMessageBox.warning(self, "正则表达式无效", str(exc))
-            return
-        if "value" not in compiled.groupindex:
-            QMessageBox.warning(self, "正则表达式无效", "必须包含命名组 (?P<value>...)")
             return
         self.accept()
 
@@ -103,23 +102,28 @@ class RuleDialog(QDialog):
 class RulesPage(QWidget):
     changed = Signal()
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, embedded: bool = False) -> None:
         super().__init__()
         self.database = database
+        self.embedded = embedded
         self.rules: list[ManagedRule] = []
         self._build_ui()
         self.refresh()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(14)
-        title = QLabel("检测规则")
-        title.setObjectName("pageTitle")
-        subtitle = QLabel("管理内置和自定义静态检测规则")
-        subtitle.setObjectName("pageSubtitle")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        if self.embedded:
+            layout.setContentsMargins(0, 10, 0, 0)
+        else:
+            layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(10 if self.embedded else 12)
+        if not self.embedded:
+            title = QLabel("检测规则")
+            title.setObjectName("pageTitle")
+            subtitle = QLabel("管理内置和自定义静态检测规则")
+            subtitle.setObjectName("pageSubtitle")
+            layout.addWidget(title)
+            layout.addWidget(subtitle)
 
         toolbar = QFrame()
         toolbar.setObjectName("toolbarPanel")
@@ -156,6 +160,11 @@ class RulesPage(QWidget):
         self.table.setColumnWidth(2, 80)
         self.table.setColumnWidth(3, 240)
         self.table.setColumnWidth(4, 80)
+        self.empty_label = QLabel("暂无检测规则。请检查内置规则文件或新增自定义规则。")
+        self.empty_label.setObjectName("emptyText")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label.setMinimumHeight(30)
+        layout.addWidget(self.empty_label)
         layout.addWidget(self.table, 1)
 
         self.search.textChanged.connect(self.refresh)
@@ -169,13 +178,21 @@ class RulesPage(QWidget):
     def refresh(self) -> None:
         term = self.search.text().strip().casefold()
         source = self.source_filter.currentData() or ""
-        rules = self.database.list_managed_rules()
+        try:
+            rules = self.database.list_managed_rules()
+        except (sqlite3.Error, OSError, ValueError):
+            rules = []
+            self.empty_label.setText("检测规则加载失败，请检查规则文件和本地数据库。（RULE-001）")
+        else:
+            self.empty_label.setText("暂无检测规则。请检查内置规则文件或新增自定义规则。")
         self.rules = [
             rule for rule in rules
             if (not term or term in f"{rule.name} {rule.risk_type} {rule.rule_id}".casefold())
             and (not source or (source == "builtin") == rule.builtin)
         ]
         self.table.setRowCount(len(self.rules))
+        self.empty_label.setVisible(not self.rules)
+        self.table.setVisible(True)
         for row, rule in enumerate(self.rules):
             languages = "全部" if set(rule.languages) == set(LANGUAGES) else ", ".join(rule.languages)
             values = (
@@ -207,6 +224,7 @@ class RulesPage(QWidget):
     def edit_selected(self) -> None:
         rule = self._selected_rule()
         if rule is None:
+            QMessageBox.information(self, "尚未选择规则", "请先在表格中选择一条自定义规则。")
             return
         if rule.builtin:
             QMessageBox.information(self, "内置规则", "内置规则只允许启用或禁用。")
@@ -238,6 +256,7 @@ class RulesPage(QWidget):
     def toggle_selected(self) -> None:
         rule = self._selected_rule()
         if rule is None:
+            QMessageBox.information(self, "尚未选择规则", "请先在表格中选择一条检测规则。")
             return
         if rule.builtin:
             self.database.set_builtin_rule_enabled(rule.rule_id, not rule.enabled)
@@ -249,6 +268,7 @@ class RulesPage(QWidget):
     def delete_selected(self) -> None:
         rule = self._selected_rule()
         if rule is None:
+            QMessageBox.information(self, "尚未选择规则", "请先在表格中选择一条自定义规则。")
             return
         if rule.builtin:
             QMessageBox.information(self, "内置规则", "内置规则不能删除。")
@@ -265,9 +285,9 @@ class RulesPage(QWidget):
 
     def _update_actions(self) -> None:
         rule = self._selected_rule()
-        self.toggle_button.setEnabled(rule is not None)
-        self.edit_button.setEnabled(rule is not None and not rule.builtin)
-        self.delete_button.setEnabled(rule is not None and not rule.builtin)
+        self.toggle_button.setEnabled(True)
+        self.edit_button.setEnabled(True)
+        self.delete_button.setEnabled(True)
         message = "请先选择一条规则" if rule is None else "内置规则不能编辑或删除" if rule.builtin else ""
         self.edit_button.setToolTip(message)
         self.delete_button.setToolTip(message)

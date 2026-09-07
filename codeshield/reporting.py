@@ -111,7 +111,7 @@ def build_html_report(
         </div><p class="note">白名单会影响最终结果差异，已消除不等同于已完成修复。</p></section>"""
     finding_rows = "".join(_finding_html(item) for item in result.findings)
     if not finding_rows:
-        finding_rows = '<div class="empty">本次扫描没有风险项。</div>'
+        finding_rows = '<div class="empty">本次扫描未发现符合当前检测规则的风险项。</div>'
     finished = record.finished_at or record.started_at
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

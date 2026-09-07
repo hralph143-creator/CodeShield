@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -58,23 +60,28 @@ class WhitelistDialog(QDialog):
 class WhitelistPage(QWidget):
     changed = Signal()
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, embedded: bool = False) -> None:
         super().__init__()
         self.database = database
+        self.embedded = embedded
         self.entries = []
         self._build_ui()
         self.refresh()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(14)
-        title = QLabel("白名单")
-        title.setObjectName("pageTitle")
-        subtitle = QLabel("管理已确认的误报和忽略规则")
-        subtitle.setObjectName("pageSubtitle")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        if self.embedded:
+            layout.setContentsMargins(0, 10, 0, 0)
+        else:
+            layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(10 if self.embedded else 12)
+        if not self.embedded:
+            title = QLabel("白名单")
+            title.setObjectName("pageTitle")
+            subtitle = QLabel("管理已确认的误报和忽略规则")
+            subtitle.setObjectName("pageSubtitle")
+            layout.addWidget(title)
+            layout.addWidget(subtitle)
 
         toolbar = QFrame()
         toolbar.setObjectName("toolbarPanel")
@@ -108,6 +115,11 @@ class WhitelistPage(QWidget):
         self.table.setColumnWidth(1, 260)
         self.table.setColumnWidth(2, 260)
         self.table.setColumnWidth(3, 155)
+        self.empty_label = QLabel("暂无白名单记录。可从扫描结果中忽略误报，或在此手动添加。")
+        self.empty_label.setObjectName("emptyText")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label.setMinimumHeight(30)
+        layout.addWidget(self.empty_label)
         layout.addWidget(self.table, 1)
 
         self.search.textChanged.connect(self.refresh)
@@ -120,7 +132,13 @@ class WhitelistPage(QWidget):
     def refresh(self) -> None:
         term = self.search.text().strip().casefold()
         entry_type = self.type_filter.currentData() or ""
-        entries = self.database.list_whitelist()
+        try:
+            entries = self.database.list_whitelist()
+        except sqlite3.Error:
+            entries = []
+            self.empty_label.setText("白名单加载失败，请检查本地数据库。（DB-001）")
+        else:
+            self.empty_label.setText("暂无白名单记录。可从扫描结果中忽略误报，或在此手动添加。")
         self.entries = [
             entry
             for entry in entries
@@ -128,6 +146,8 @@ class WhitelistPage(QWidget):
             and (not term or term in f"{entry.value} {entry.description}".casefold())
         ]
         self.table.setRowCount(len(self.entries))
+        self.empty_label.setVisible(not self.entries)
+        self.table.setVisible(True)
         for row, entry in enumerate(self.entries):
             target = self._display_value(entry.entry_type, entry.value)
             values = (
@@ -171,6 +191,7 @@ class WhitelistPage(QWidget):
     def toggle_selected(self) -> None:
         entry = self._selected_entry()
         if entry is None:
+            QMessageBox.information(self, "尚未选择白名单", "请先在表格中选择一条白名单记录。")
             return
         self.database.set_whitelist_enabled(entry.entry_id, not entry.enabled)
         self.refresh()
@@ -179,6 +200,7 @@ class WhitelistPage(QWidget):
     def delete_selected(self) -> None:
         entry = self._selected_entry()
         if entry is None:
+            QMessageBox.information(self, "尚未选择白名单", "请先在表格中选择一条白名单记录。")
             return
         if QMessageBox.question(self, "删除白名单", "确定删除选中的白名单吗？") != QMessageBox.StandardButton.Yes:
             return
@@ -192,8 +214,8 @@ class WhitelistPage(QWidget):
 
     def _update_actions(self) -> None:
         selected = self._selected_entry() is not None
-        self.toggle_button.setEnabled(selected)
-        self.delete_button.setEnabled(selected)
+        self.toggle_button.setEnabled(True)
+        self.delete_button.setEnabled(True)
         message = "" if selected else "请先选择一条白名单记录"
         self.toggle_button.setToolTip(message)
         self.delete_button.setToolTip(message)

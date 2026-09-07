@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+import sqlite3
 
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -23,6 +25,9 @@ from codeshield.database import Database
 from codeshield.reporting import export_report
 
 
+logger = logging.getLogger(__name__)
+
+
 class ReportsPage(QWidget):
     exported = Signal(str)
 
@@ -36,8 +41,8 @@ class ReportsPage(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(14)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(12)
         title = QLabel("报告中心")
         title.setObjectName("pageTitle")
         subtitle = QLabel("导出本机扫描结果与风险分析报告")
@@ -49,8 +54,8 @@ class ReportsPage(QWidget):
         card.setObjectName("contentCard")
         card.setMaximumWidth(820)
         form = QFormLayout(card)
-        form.setContentsMargins(24, 22, 24, 24)
-        form.setSpacing(14)
+        form.setContentsMargins(20, 18, 20, 20)
+        form.setSpacing(12)
         self.scan_combo = QComboBox()
         self.report_type = QComboBox()
         self.report_type.addItem("HTML 离线报告", "html")
@@ -74,7 +79,6 @@ class ReportsPage(QWidget):
         self.export_button = QPushButton("导出报告")
         self.export_button.setObjectName("primaryButton")
         self.open_button = QPushButton("打开所在文件夹")
-        self.open_button.setEnabled(False)
         action_row.addWidget(self.export_button)
         action_row.addWidget(self.open_button)
         action_row.addStretch()
@@ -98,7 +102,12 @@ class ReportsPage(QWidget):
 
     def refresh(self) -> None:
         selected_id = self.scan_combo.currentData() if self.scan_combo.count() else None
-        self.records = self.database.list_scan_history(status="completed")
+        load_failed = False
+        try:
+            self.records = self.database.list_scan_history(status="completed")
+        except sqlite3.Error:
+            self.records = []
+            load_failed = True
         self.scan_combo.clear()
         for record in self.records:
             moment = record.finished_at or record.started_at
@@ -112,10 +121,15 @@ class ReportsPage(QWidget):
                 self.scan_combo.setCurrentIndex(index)
         available = bool(self.records)
         self.scan_combo.setEnabled(available)
-        self.notice.setText(
-            "报告只使用数据库中的脱敏快照，不会重新读取源码。"
-            if available else "暂无可导出的扫描记录。完成一次扫描后再导出报告。"
-        )
+        self.report_type.setEnabled(available)
+        self.choose_button.setEnabled(True)
+        if load_failed:
+            self.notice.setText("扫描记录加载失败，请检查本地数据库。（DB-001）")
+        else:
+            self.notice.setText(
+                "报告只使用数据库中的脱敏快照，不会重新读取源码。"
+                if available else "暂无可导出的扫描记录。完成一次扫描后再导出报告。"
+            )
         self._update_summary()
         self._update_export_button()
 
@@ -135,6 +149,7 @@ class ReportsPage(QWidget):
         directory = Path(self.output_dir.text().strip())
         if scan_id is None:
             self.notice.setText("暂无可导出的扫描记录。")
+            QMessageBox.information(self, "暂无扫描记录", "请先完成一次项目扫描，然后再导出报告。")
             return
         if not directory.is_dir():
             QMessageBox.warning(self, "无法导出", "请选择有效的输出目录。")
@@ -160,7 +175,8 @@ class ReportsPage(QWidget):
                 comparison,
             )
         except (OSError, ValueError, KeyError) as exc:
-            QMessageBox.warning(self, "报告导出失败", str(exc))
+            logger.exception("REPORT-001 报告导出失败 type=%s", type(exc).__name__)
+            QMessageBox.warning(self, "报告导出失败", "无法写入报告，请检查输出目录权限。（REPORT-001）")
             return
         self.last_output = target
         self.open_button.setEnabled(True)
@@ -168,8 +184,11 @@ class ReportsPage(QWidget):
         self.exported.emit(str(target))
 
     def open_output_directory(self) -> None:
-        if self.last_output:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_output.parent)))
+        if not self.last_output:
+            QMessageBox.information(self, "尚未导出报告", "请先成功导出一份报告，然后再打开所在文件夹。")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_output.parent))):
+            QMessageBox.warning(self, "无法打开文件夹", "系统无法打开报告所在文件夹，请手动前往输出目录。")
 
     def _update_summary(self) -> None:
         scan_id = self.scan_combo.currentData()
@@ -188,7 +207,7 @@ class ReportsPage(QWidget):
         has_scan = self.scan_combo.currentData() is not None
         directory_text = self.output_dir.text().strip()
         has_directory = bool(directory_text) and Path(directory_text).is_dir()
-        self.export_button.setEnabled(has_scan and has_directory)
+        self.export_button.setEnabled(True)
         if not has_scan:
             message = "暂无可导出的扫描记录"
         elif not has_directory:
